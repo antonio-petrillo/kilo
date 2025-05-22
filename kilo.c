@@ -33,7 +33,7 @@ void enable_raw_mode() {
     raw.c_iflag &= ~(BRKINT | ICRNL | INPCK | ISTRIP | IXON);
     raw.c_oflag &= ~(OPOST);
     raw.c_cflag |= (CS8);
-    raw.c_cflag &= ~(ECHO | ICANON | ISIG | IEXTEN);
+    raw.c_lflag &= ~(ECHO | ICANON | IEXTEN | ISIG);
     raw.c_cc[VMIN] = 0;
     raw.c_cc[VTIME] = 1;
 
@@ -48,7 +48,7 @@ int main() {
 
     while (true) {
         char c = '\0';
-        if (read(STDERR_FILENO, &c, 1) == -1 && errno != EAGAIN)
+        if (read(STDIN_FILENO, &c, 1) == -1 && errno != EAGAIN)
             die("read");
         if (iscntrl(c)) {
             printf("%d\r\n", c);
