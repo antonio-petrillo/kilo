@@ -1,9 +1,9 @@
 #include <asm-generic/ioctls.h>
-#include <ctype.h>
 #include <errno.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/ioctl.h>
 #include <termios.h>
 #include <unistd.h>
@@ -79,21 +79,22 @@ int get_cursor_position(int *rows, int *cols) {
         i++;
     }
     buf[i] = '\0';
-    printf("\r\n&buf[1]: '%s'\r\n", buf + 1);
-    editor_read_key();
+    if (buf[0] != '\x1b' || buf[1] != '[')
+        return -1;
+    if (sscanf(&buf[2], "%d;%d", rows, cols) != 2)
+        return -1;
 
-    return -1;
+    return 0;
 }
 
 int get_window_size(int *rows, int *cols) {
     struct winsize ws;
     //  TODO  force the code to enter the `if` to test the logic, remove in
     //  production
-    if (1 || ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == -1 || ws.ws_col == 0) {
+    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == -1 || ws.ws_col == 0) {
         if (write(STDOUT_FILENO, "\x1b[999C\x1b[999B", 12) != 12)
             return -1;
-        editor_read_key();
-        return -1;
+        return get_cursor_position(rows, cols);
     } else {
         *cols = ws.ws_col;
         *rows = ws.ws_row;
@@ -101,21 +102,51 @@ int get_window_size(int *rows, int *cols) {
     }
 }
 
+/*** terminal ***/
+struct abuf {
+    char *b;
+    int len;
+};
+
+#define ABUF_INIT {.b = NULL, .len = 0}
+
+void ab_append(struct abuf *ab, const char *s, int len) {
+    char *new = realloc(ab->b, ab->len + len);
+    if (new != NULL)
+        return;
+    memcpy(&new[ab->len], s, len);
+    ab->b = new;
+    ab->len += len;
+}
+
+void ab_free(struct abuf *ab) { free(ab->b); }
+
 /*** output ***/
 
-void editor_draw_rows() {
+void editor_draw_rows(struct abuf *ab) {
     for (int y = 0; y < E.screenrows; y++) {
-        write(STDOUT_FILENO, "~\r\n", 3);
+        ab_append(ab, "~", 1);
+
+        ab_append(ab, "\x1b[K", 3);
+        if (y < E.screenrows - 1) {
+            ab_append(ab, "\r\n", 2);
+        }
     }
+    ab_append(ab, "~", 1);
 }
 
 void editor_refresh_screen() {
-    write(STDOUT_FILENO, "\x1b[2J", 4);
-    write(STDOUT_FILENO, "\x1b[H", 3);
+    struct abuf ab = ABUF_INIT;
+    ab_append(&ab, "\x1b[?25l", 6);
+    ab_append(&ab, "\x1b[H", 3);
 
-    editor_draw_rows();
+    editor_draw_rows(&ab);
 
-    write(STDOUT_FILENO, "\x1b[H", 3);
+    ab_append(&ab, "\x1b[H", 3);
+    ab_append(&ab, "\x1b[?25h", 6);
+
+    write(STDOUT_FILENO, ab.b, ab.len);
+    ab_free(&ab);
 }
 
 /*** input ***/
