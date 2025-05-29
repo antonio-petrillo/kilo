@@ -2,12 +2,14 @@
 #define _GNU_SOURCE
 #define _BSD_SOURCE
 #include <errno.h>
+#include <stdarg.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
 #include <termios.h>
+#include <time.h>
 #include <unistd.h>
 
 /*** defines ***/
@@ -46,6 +48,9 @@ struct editor_config {
     int screencols;
     int numrows;
     struct erow *row;
+    char *filename;
+    time_t statusmsg_time;
+    char statusmsg[80];
     struct termios orig_termios;
 };
 
@@ -239,6 +244,10 @@ void editor_append_row(char *s, size_t len) {
 /*** file i/o ***/
 
 void editor_open(char *filename) {
+    if (E.filename != NULL)
+        free(E.filename);
+
+    E.filename = strdup(filename);
     FILE *fp = fopen(filename, "r");
     if (!fp)
         die("ropen");
@@ -326,9 +335,39 @@ void editor_draw_rows(struct abuf *ab) {
         }
 
         ab_append(ab, "\x1b[K", 3);
-        if (y < E.screenrows - 1)
-            ab_append(ab, "\r\n", 2);
+        ab_append(ab, "\r\n", 2);
     }
+}
+
+void editor_draw_status_bar(struct abuf *ab) {
+    ab_append(ab, "\x1b[7m", 4);
+    char status[80], rstatus[80];
+    int len = snprintf(status, sizeof(status), "%.20s - %d lines",
+                       E.filename ? E.filename : "[No Name]", E.numrows);
+    int rlen = snprintf(rstatus, sizeof(status), "%d/%d", E.cy + 1, E.numrows);
+    if (len > E.screencols)
+        len = E.screencols;
+    ab_append(ab, status, len);
+    while (len < E.screencols) {
+        if (E.screencols - len == rlen) {
+            ab_append(ab, rstatus, rlen);
+            break;
+        } else {
+            ab_append(ab, " ", 1);
+            len++;
+        }
+    }
+    ab_append(ab, "\x1b[m", 3);
+    ab_append(ab, "\r\n", 2);
+}
+
+void editor_draw_message_bar(struct abuf *ab) {
+    ab_append(ab, "\x1b[K", 3);
+    int msg_len = strlen(E.statusmsg);
+    if (msg_len > E.screencols)
+        msg_len = E.screencols;
+    if (msg_len && time(NULL) - E.statusmsg_time < 5)
+        ab_append(ab, E.statusmsg, msg_len);
 }
 
 void editor_refresh_screen() {
@@ -338,6 +377,8 @@ void editor_refresh_screen() {
     ab_append(&ab, "\x1b[H", 3);
 
     editor_draw_rows(&ab);
+    editor_draw_status_bar(&ab);
+    editor_draw_message_bar(&ab);
 
     char buf[32];
     snprintf(buf, sizeof(buf), "\x1b[%d;%dH", E.cy - E.rowoff + 1,
@@ -347,6 +388,14 @@ void editor_refresh_screen() {
     ab_append(&ab, "\x1b[?25h", 6);
     write(STDOUT_FILENO, ab.b, ab.len);
     ab_free(&ab);
+}
+
+void editor_set_status_message(const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(E.statusmsg, sizeof(E.statusmsg), fmt, ap);
+    va_end(ap);
+    E.statusmsg_time = time(NULL);
 }
 
 /*** input ***/
@@ -439,8 +488,13 @@ void init_editor() {
     E.rowoff = 0;
     E.coloff = 0;
     E.row = NULL;
+    E.filename = NULL;
+    E.statusmsg[0] = '\0';
+    E.statusmsg_time = 0;
+
     if (get_window_size(&E.screenrows, &E.screencols) == -1)
         die("get_window_size");
+    E.screenrows -= 2;
 }
 
 int main(int argc, char *argv[]) {
@@ -449,6 +503,8 @@ int main(int argc, char *argv[]) {
     if (argc >= 2) {
         editor_open(argv[1]);
     }
+
+    editor_set_status_message("HELP: Ctrl-Q = quit");
 
     while (true) {
         editor_refresh_screen();
