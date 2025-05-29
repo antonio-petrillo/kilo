@@ -14,6 +14,7 @@
 
 #define CTRL_KEY(k) ((k) & 0x1f)
 #define KILO_VERSION "0.0.1"
+#define KILO_TAB_STOP 4
 
 enum editor_key {
     ARROW_LEFT = 1000,
@@ -31,10 +32,13 @@ enum editor_key {
 
 struct erow {
     int size;
+    int rsize;
     char *chars;
+    char *render;
 };
 
 struct editor_config {
+    int rx;
     int cx, cy;
     int rowoff;
     int coloff;
@@ -185,6 +189,37 @@ int get_window_size(int *rows, int *cols) {
 
 /*** row operations ***/
 
+int editor_row_cx_to_rx(struct erow *row, int cx) {
+    int rx = 0;
+    for (int j = 0; j < cx; j++) {
+        if (row->chars[j] == '\t')
+            rx += (KILO_TAB_STOP - 1) - (rx % KILO_TAB_STOP);
+        rx++;
+    }
+    return rx;
+}
+
+void editor_update_row(struct erow *row) {
+    int tabs = 0;
+    for (int j = 0; j < row->size; j++)
+        if (row->chars[j] == '\t')
+            tabs++;
+
+    free(row->render);
+    row->render = malloc(row->size + tabs * (KILO_TAB_STOP - 1) + 1);
+    int idx = 0;
+    for (int j = 0; j < row->size; j++) {
+        if (row->chars[j] == '\t') {
+            row->render[idx++] = ' ';
+            while (idx % KILO_TAB_STOP != 0)
+                row->render[idx++] = ' ';
+        } else
+            row->render[idx++] = row->chars[j];
+    }
+    row->render[idx] = '\0';
+    row->rsize = idx;
+}
+
 void editor_append_row(char *s, size_t len) {
     E.row = realloc(E.row, sizeof(struct erow) * (E.numrows + 1));
 
@@ -193,6 +228,11 @@ void editor_append_row(char *s, size_t len) {
     E.row[at].chars = malloc(len + 1);
     memcpy(E.row[at].chars, s, len);
     E.row[at].chars[len] = '\0';
+
+    E.row[at].rsize = 0;
+    E.row[at].render = NULL;
+    editor_update_row(&E.row[at]);
+
     E.numrows++;
 }
 
@@ -206,8 +246,6 @@ void editor_open(char *filename) {
     char *line = NULL;
     size_t linecap = 0;
     ssize_t linelen;
-
-    linelen = getline(&line, &linecap, fp);
     while ((linelen = getline(&line, &linecap, fp)) != -1) {
         while (linelen > 0 &&
                (line[linelen - 1] == '\n' || line[linelen - 1] == '\r'))
@@ -241,14 +279,19 @@ void ab_free(struct abuf *ab) { free(ab->b); }
 /*** output ***/
 
 void editor_scroll() {
+    E.rx = 0;
+    if (E.cy < E.numrows) {
+        E.rx = editor_row_cx_to_rx(&E.row[E.cy], E.cx);
+    }
+
     if (E.cy < E.rowoff)
         E.rowoff = E.cy;
     if (E.cy >= E.rowoff + E.screenrows)
         E.rowoff = E.cy - E.screenrows + 1;
-    if (E.cx < E.coloff)
-        E.coloff = E.cx;
-    if (E.cx >= E.coloff + E.screencols)
-        E.coloff = E.cx - E.screencols + 1;
+    if (E.rx < E.coloff)
+        E.coloff = E.rx;
+    if (E.rx >= E.coloff + E.screencols)
+        E.coloff = E.rx - E.screencols + 1;
 }
 
 void editor_draw_rows(struct abuf *ab) {
@@ -274,12 +317,12 @@ void editor_draw_rows(struct abuf *ab) {
                 ab_append(ab, "~", 1);
             }
         } else {
-            int len = E.row[filerow].size - E.coloff;
+            int len = E.row[filerow].rsize - E.coloff;
             if (len < 0)
                 len = 0;
             if (len > E.screencols)
                 len = E.screencols;
-            ab_append(ab, &E.row[filerow].chars[E.coloff], len);
+            ab_append(ab, &E.row[filerow].render[E.coloff], len);
         }
 
         ab_append(ab, "\x1b[K", 3);
@@ -298,7 +341,7 @@ void editor_refresh_screen() {
 
     char buf[32];
     snprintf(buf, sizeof(buf), "\x1b[%d;%dH", E.cy - E.rowoff + 1,
-             E.cx - E.coloff + 1);
+             E.rx - E.coloff + 1);
     ab_append(&ab, buf, strlen(buf));
 
     ab_append(&ab, "\x1b[?25h", 6);
@@ -358,7 +401,8 @@ void editor_process_keypress() {
         E.cx = 0;
         break;
     case END_KEY:
-        E.cx = E.screencols - 1;
+        if (E.cy < E.numrows)
+            E.cx = E.screencols - 1;
         break;
 
     case ARROW_LEFT:
@@ -370,6 +414,14 @@ void editor_process_keypress() {
 
     case PAGE_UP:
     case PAGE_DOWN: {
+        if (c == PAGE_UP)
+            E.cy = E.rowoff;
+        else if (c == PAGE_DOWN) {
+            E.cy = E.rowoff + E.screenrows - 1;
+            if (E.cy > E.numrows)
+                E.cy = E.numrows;
+        }
+
         int times = E.screenrows;
         while (times--)
             editor_move_cursor(c == PAGE_UP ? ARROW_UP : ARROW_DOWN);
@@ -382,6 +434,7 @@ void editor_process_keypress() {
 void init_editor() {
     E.cx = 0;
     E.cy = 0;
+    E.rx = 0;
     E.numrows = 0;
     E.rowoff = 0;
     E.coloff = 0;
