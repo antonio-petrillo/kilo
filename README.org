@@ -1,0 +1,3 @@
+#+title: Readme
+
+Editor [[https://viewsourcecode.org/snaptoken/kilo/index.html][kilo]], cli text editor in a 1000 lines (circa), implemented following the series by [[https://viewsourcecode.org/snaptoken/kilo/index.html][Snaptoken]].
